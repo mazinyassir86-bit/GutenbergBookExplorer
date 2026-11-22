@@ -1,0 +1,376 @@
+/**
+ * Course: Object-Oriented Programming / Java Programming
+ * Assignment: 3nd Assignment -Gutenberg Book Explorer
+ * Student Name: MAZIN YASSIR ELGILANI AHMED
+ * Roll Number: 202510775
+ * Institution: Kigali Independent University (ULK)
+ */
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Scanner;
+import java.util.Set;
+
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+
+public class Main {
+    private static final int MAX_BOOKS = 20;
+    private static final String USER_AGENT = "GutenbergBookExplorer/1.0";
+
+    private static final Scanner input = new Scanner(System.in);
+    private static final Book[] catalog = new Book[MAX_BOOKS];
+    private static final Book[] readingList = new Book[MAX_BOOKS];
+    private static int catalogSize = 0;
+    private static int readingListSize = 0;
+
+    private static class Book {
+        private final String title;
+        private final String author;
+        private final String url;
+
+        private Book(String title, String author, String url) {
+            this.title = title;
+            this.author = author;
+            this.url = url;
+        }
+    }
+
+    public static void main(String[] args) {
+        boolean running = true;
+
+        while (running) {
+            printMenu();
+            int choice = readChoice();
+
+            if (choice == 1) {
+                exploreBooks();
+            } else if (choice == 2) {
+                System.out.print("Enter title keyword: ");
+                searchBook(input.nextLine().trim());
+            } else if (choice == 3) {
+                System.out.print("Enter author name: ");
+                searchBook(input.nextLine().trim(), true);
+            } else if (choice == 4) {
+                addBook();
+            } else if (choice == 5) {
+                viewReadingList();
+            } else if (choice == 6) {
+                removeBook();
+            } else if (choice == 7) {
+                displayBookDetails();
+            } else if (choice == 0) {
+                running = false;
+                System.out.println("Goodbye!");
+            } else {
+                System.out.println("Invalid choice. Enter a number from 0 to 7.");
+            }
+        }
+
+        input.close();
+    }
+
+    private static void printMenu() {
+        System.out.println("\n===== GUTENBERG BOOK EXPLORER =====");
+        System.out.println("1. Explore Books");
+        System.out.println("2. Search by Title");
+        System.out.println("3. Search by Author");
+        System.out.println("4. Add Book to Reading List");
+        System.out.println("5. View Reading List");
+        System.out.println("6. Remove Book");
+        System.out.println("7. Display Book Details");
+        System.out.println("0. Exit");
+    }
+
+    private static int readChoice() {
+        System.out.print("Enter your choice: ");
+        try {
+            return Integer.parseInt(input.nextLine().trim());
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
+    }
+
+    private static void exploreBooks() {
+        clearCatalog();
+
+        try {
+            Document document = Jsoup.connect("https://www.gutenberg.org/browse/scores/top")
+                    .userAgent(USER_AGENT)
+                    .timeout(15000)
+                    .get();
+
+            catalogSize = extractBooks(document, catalog, MAX_BOOKS);
+
+            if (catalogSize == 0) {
+                System.out.println("No books were found on the catalog page.");
+            } else {
+                System.out.println("\nTop Project Gutenberg Books:");
+                printCatalog(catalogSize);
+            }
+        } catch (Exception exception) {
+            System.out.println("Connection error: " + exception.getMessage());
+        }
+    }
+
+    // Searches by title.
+    private static void searchBook(String title) {
+        searchBook(title, false);
+    }
+
+    // Mandatory overload: when searchByAuthor is true, search by author.
+    private static void searchBook(String keyword, boolean searchByAuthor) {
+        if (keyword.isEmpty()) {
+            System.out.println("Search text cannot be empty.");
+            return;
+        }
+
+        clearCatalog();
+        String mode = searchByAuthor ? "author" : "title";
+        String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
+        String searchUrl = "https://www.gutenberg.org/ebooks/search/?query="
+                + encodedKeyword + "&submit_search=Go";
+
+        try {
+            Document document = Jsoup.connect(searchUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout(15000)
+                    .get();
+
+            catalogSize = extractBooks(document, catalog, MAX_BOOKS);
+
+            int resultCount = filterCatalog(keyword, searchByAuthor);
+            if (resultCount == 0) {
+                System.out.println("No books matched the " + mode + " search.");
+            } else {
+                catalogSize = resultCount;
+                System.out.println("\nSearch results:");
+                printCatalog(catalogSize);
+            }
+        } catch (Exception exception) {
+            System.out.println("Connection error: " + exception.getMessage());
+        }
+    }
+
+    private static int extractBooks(Document document, Book[] destination, int limit) {
+        int count = 0;
+        Set<String> seenUrls = new HashSet<>();
+        Elements bookItems = document.select("li.booklink");
+
+        for (Element item : bookItems) {
+            if (count >= limit) {
+                break;
+            }
+
+            Element link = item.selectFirst("a[href]");
+            if (link == null) {
+                continue;
+            }
+
+            String url = cleanUrl(link.absUrl("href"));
+            if (url.isEmpty() || !seenUrls.add(url)) {
+                continue;
+            }
+
+            Element titleElement = item.selectFirst(".title");
+            Element authorElement = item.selectFirst(".subtitle");
+            String title = textOrUnknown(titleElement, link.text());
+            String author = textOrDefault(authorElement, "Unknown author");
+            destination[count++] = new Book(clean(title), cleanAuthor(author), url);
+        }
+
+        if (count >= limit) {
+            return count;
+        }
+
+        Elements links = document.select("a[href^=/ebooks/]");
+        for (Element link : links) {
+            if (count >= limit) {
+                break;
+            }
+
+            String url = cleanUrl(link.absUrl("href"));
+            if (!url.matches(".*/ebooks/[0-9]+/?$")
+                    || !seenUrls.add(url)) {
+                continue;
+            }
+
+            String title = clean(link.text());
+            if (title.isEmpty()) {
+                continue;
+            }
+            destination[count++] = new Book(title, "Author unavailable", url);
+        }
+
+        return count;
+    }
+
+    private static int filterCatalog(String keyword, boolean searchByAuthor) {
+        String searchText = keyword.toLowerCase();
+        int matched = 0;
+
+        for (int i = 0; i < catalogSize; i++) {
+            String field = searchByAuthor ? catalog[i].author : catalog[i].title;
+            if (field.toLowerCase().contains(searchText)) {
+                catalog[matched++] = catalog[i];
+            }
+        }
+
+        for (int i = matched; i < catalogSize; i++) {
+            catalog[i] = null;
+        }
+        return matched;
+    }
+
+    private static void printCatalog(int count) {
+        for (int i = 0; i < count; i++) {
+            System.out.println((i + 1) + ". " + catalog[i].title);
+            System.out.println("   Author: " + catalog[i].author);
+            System.out.println("   URL: " + catalog[i].url);
+        }
+    }
+
+    private static void addBook() {
+        if (readingListSize >= MAX_BOOKS) {
+            System.out.println("Reading list is full.");
+            return;
+        }
+        if (catalogSize == 0) {
+            System.out.println("Explore or search for books first.");
+            return;
+        }
+
+        printCatalog(catalogSize);
+        System.out.print("Enter catalog number to add: ");
+
+        try {
+            int number = Integer.parseInt(input.nextLine().trim());
+            if (number < 1 || number > catalogSize) {
+                System.out.println("Invalid catalog number.");
+                return;
+            }
+
+            readingList[readingListSize++] = catalog[number - 1];
+            System.out.println("Added \"" + catalog[number - 1].title
+                    + "\" to your reading list.");
+        } catch (NumberFormatException exception) {
+            System.out.println("Please enter a valid number.");
+        }
+    }
+
+    private static void viewReadingList() {
+        if (readingListSize == 0) {
+            System.out.println("Your reading list is empty.");
+            return;
+        }
+
+        System.out.println("\nYour Reading List:");
+        for (int i = 0; i < readingListSize; i++) {
+            System.out.println((i + 1) + ". " + readingList[i].title
+                    + " - " + readingList[i].author);
+        }
+    }
+
+    private static void removeBook() {
+        if (readingListSize == 0) {
+            System.out.println("Your reading list is empty.");
+            return;
+        }
+
+        viewReadingList();
+        System.out.print("Enter reading list number to remove: ");
+
+        try {
+            int number = Integer.parseInt(input.nextLine().trim());
+            if (number < 1 || number > readingListSize) {
+                System.out.println("Invalid reading list number.");
+                return;
+            }
+
+            int index = number - 1;
+            String removedTitle = readingList[index].title;
+
+            for (int i = index; i < readingListSize - 1; i++) {
+                readingList[i] = readingList[i + 1];
+            }
+            readingList[--readingListSize] = null;
+            System.out.println("Removed \"" + removedTitle + "\".");
+        } catch (NumberFormatException exception) {
+            System.out.println("Please enter a valid number.");
+        }
+    }
+
+    private static void displayBookDetails() {
+        if (readingListSize == 0) {
+            System.out.println("Your reading list is empty.");
+            return;
+        }
+
+        viewReadingList();
+        System.out.print("Enter reading list number for details: ");
+
+        try {
+            int number = Integer.parseInt(input.nextLine().trim());
+            if (number < 1 || number > readingListSize) {
+                System.out.println("Invalid reading list number.");
+                return;
+            }
+
+            Book book = readingList[number - 1];
+            System.out.println("\nBook Details");
+            System.out.println("Title: " + book.title);
+            System.out.println("Author: " + book.author);
+            System.out.println("Gutenberg URL: " + book.url);
+        } catch (NumberFormatException exception) {
+            System.out.println("Please enter a valid number.");
+        }
+    }
+
+    private static void clearCatalog() {
+        catalogSize = 0;
+        for (int i = 0; i < catalog.length; i++) {
+            catalog[i] = null;
+        }
+    }
+
+    private static String textOrUnknown(Element element, String fallback) {
+        if (element == null) {
+            return clean(fallback);
+        }
+        String text = clean(element.text());
+        return text.isEmpty() ? clean(fallback) : text;
+    }
+
+    private static String textOrDefault(Element element, String fallback) {
+        if (element == null) {
+            return fallback;
+        }
+        String text = clean(element.text());
+        return text.isEmpty() ? fallback : text;
+    }
+
+    private static String clean(String value) {
+        if (value == null) {
+            return "";
+        }
+        String cleaned = value.trim().replaceAll("\\s+", " ");
+        return cleaned.isEmpty() ? "Unknown" : cleaned;
+    }
+
+    private static String cleanAuthor(String author) {
+        String cleaned = clean(author);
+        if (cleaned.toLowerCase().startsWith("by ")) {
+            cleaned = cleaned.substring(3).trim();
+        }
+        return cleaned.isEmpty() ? "Unknown author" : cleaned;
+    }
+
+    private static String cleanUrl(String url) {
+        if (url == null) {
+            return "";
+        }
+        return url.split("[?#]")[0];
+    }
+}
